@@ -1,8 +1,7 @@
 #!/usr/bin/env perl
 use 5.14.0;
 use lib "lib", "../lib";
-use List::Util 'min';
-use Parallel::Pipes;
+use Parallel::Pipes::App;
 
 =head1 DESCRIPTION
 
@@ -34,13 +33,16 @@ package URLQueue {
     }
     sub get {
         my $self = shift;
-        grep { $self->{queue}{$_}{state} == WAITING } keys %{$self->{queue}};
+        my ($url) = grep { $self->{queue}{$_}{state} == WAITING } keys %{$self->{queue}};
+        return unless $url;
+        $self->_set_running($url);
+        [ $url, $self->_depth_for($url) ];
     }
-    sub set_running {
+    sub _set_running {
         my ($self, $url) = @_;
         $self->{queue}{$url}{state} = RUNNING;
     }
-    sub depth_for {
+    sub _depth_for {
         my ($self, $url) = @_;
         $self->{queue}{$url}{depth};
     }
@@ -64,7 +66,7 @@ package Crawler {
     use Time::HiRes ();
     sub new {
         bless {
-            http => LWP::UserAgent->new(timeout => 5),
+            http => LWP::UserAgent->new(timeout => 5, keep_alive => 1),
             scraper => scraper { process '//a', 'url[]' => '@href' },
         }, shift;
     }
@@ -92,45 +94,22 @@ package Crawler {
     }
 }
 
+my $queue = URLQueue->new(url => "https://www.cpan.org/", depth => 3);
 
+my $app = Parallel::Pipes::App->new(
+    workers => 10,
+    dequeue => sub {
+        $queue->get;
+    },
+    process => sub {
+        my ($url, $depth) = @{$_[0]};
+        state $crawler = Crawler->new;
+        return $crawler->crawl($url, $depth);
+    },
+    on_done => sub {
+        my $result = shift;
+        $queue->register($result);
+    },
+);
 
-my $queue = URLQueue->new(url => "http://www.cpan.org/", depth => 3);
-
-my $pipes = Parallel::Pipes->new(5, sub {
-    my ($url, $depth) = @{$_[0]};
-    state $crawler = Crawler->new;
-    return $crawler->crawl($url, $depth);
-});
-
-my $get; $get = sub {
-    my $queue = shift;
-    if (my @url = $queue->get) {
-        return @url;
-    }
-    if (my @written = $pipes->is_written) {
-        my @ready = $pipes->is_ready(@written);
-        for my $result (grep $_, map { $_->read } @ready) {
-            $queue->register($result);
-        }
-        return $queue->$get;
-    } else {
-        return;
-    }
-};
-
-while (my @url = $queue->$get) {
-    my @ready = $pipes->is_ready;
-    if (my @written = grep { $_->is_written } @ready) {
-        for my $result (grep $_, map { $_->read } @written) {
-            $queue->register($result);
-        }
-    }
-    for my $i ( 0 .. min($#url, $#ready) ) {
-        my $url = $url[$i];
-        my $ready = $ready[$i];
-        $queue->set_running($url);
-        $ready->write( [ $url, $queue->depth_for($url) ] );
-    }
-}
-
-$pipes->close;
+$app->run;

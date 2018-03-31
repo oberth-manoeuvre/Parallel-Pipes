@@ -159,11 +159,12 @@ sub _fork {
     pipe my $read_fh1, my $write_fh1;
     pipe my $read_fh2, my $write_fh2;
     my $pid = fork;
-    die "fork failed" unless defined $pid;
+    die "fork failed: $!" unless defined $pid;
     if ($pid == 0) {
         srand;
         close $_ for $read_fh1, $write_fh2, map { ($_->{read_fh}, $_->{write_fh}) } $self->pipes;
-        my $there = Parallel::Pipe::There->new(read_fh  => $read_fh2, write_fh => $write_fh1);
+        undef $self;
+        my $there = Parallel::Pipe::There->new(read_fh => $read_fh2, write_fh => $write_fh1);
         while (my $read = $there->read) {
             $there->write( $code->($read->{data}) );
         }
