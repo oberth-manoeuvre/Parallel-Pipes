@@ -4,6 +4,7 @@ use strict;
 use warnings;
 use IO::Handle;
 use IO::Select;
+use IO::Pipely qw(pipely);
 
 use constant WIN32 => $^O eq 'MSWin32';
 
@@ -131,9 +132,6 @@ our $VERSION = '0.005';
 
 sub new {
     my ($class, $number, $code) = @_;
-    if (WIN32 and $number != 1) {
-        die "The number of pipes must be 1 under WIN32 environment.\n";
-    }
     my $self = bless {
         code => $code,
         number => $number,
@@ -154,8 +152,8 @@ sub no_fork { shift->{no_fork} }
 sub _fork {
     my $self = shift;
     my $code = $self->{code};
-    pipe my $read_fh1, my $write_fh1;
-    pipe my $read_fh2, my $write_fh2;
+    my ($read_fh1, $write_fh1) = pipely;
+    my ($read_fh2, $write_fh2) = pipely;
     my $pid = fork;
     die "fork failed" unless defined $pid;
     if ($pid == 0) {
